@@ -9,6 +9,16 @@
 set -euo pipefail
 IFS=$'\n\t'
 
+# Ensure we run under bash (some desktop/file-manager runners invoke /bin/sh)
+if [ -z "${BASH_VERSION-}" ]; then
+  if command -v bash >/dev/null 2>&1; then
+    exec bash "$0" "$@"
+  else
+    echo "ERROR: this script requires bash. Install bash and re-run." >&2
+    exit 1
+  fi
+fi
+
 PROG_NAME=$(basename "$0")
 
 # Recommended CAKE option strings (user-specified preference) — use arrays so words remain separate
@@ -215,7 +225,8 @@ apply_cake_egress() {
   shift 2
   # remaining args ($@) are the CAKE option tokens (array-safe)
   if [ "$bw" = "UNLIMITED" ]; then
-    tc qdisc replace dev "$ifc" root cake "$@"
+    # explicitly pass the 'unlimited' token so CAKE receives it directly
+    tc qdisc replace dev "$ifc" root cake unlimited "$@"
   else
     tc qdisc replace dev "$ifc" root cake bandwidth "$bw" "$@"
   fi
@@ -227,7 +238,8 @@ apply_cake_ingress() {
   shift 2
   # remaining args ($@) are the CAKE option tokens (array-safe)
   if [ "$bw" = "UNLIMITED" ]; then
-    tc qdisc replace dev "$ifb" root cake "$@"
+    # explicitly pass the 'unlimited' token to ensure IFB qdisc becomes unlimited
+    tc qdisc replace dev "$ifb" root cake unlimited "$@"
   else
     tc qdisc replace dev "$ifb" root cake bandwidth "$bw" "$@"
   fi
@@ -268,7 +280,52 @@ main() {
   show_interface_menu
   prompt_select_interface
 
-  # detect existing CAKE
+  # Detect if an IFB device already exists for the selected interface
+  IFBDEV="ifb-$SELECTED_IF"
+  IFB_PRESENT=0
+  IFB_HAS_CAKE=0
+  PRESET_DOWNLOAD_BW=0
+  if ip link show dev "$IFBDEV" >/dev/null 2>&1; then
+    IFB_PRESENT=1
+    if tc_has_cake "$IFBDEV"; then
+      IFB_HAS_CAKE=1
+    fi
+  fi
+
+  if [ "$IFB_PRESENT" -eq 1 ]; then
+    echo
+    _yellow "Detected existing IFB device: $IFBDEV"
+    if [ "$IFB_HAS_CAKE" -eq 1 ]; then
+      _yellow "CAKE already present on $IFBDEV."
+      # allow user to reply 'y/n' OR supply a bandwidth directly (e.g. 'unlimited')
+      read -rp "Replace existing CAKE on $IFBDEV with new settings? [Y/n or enter bandwidth directly]: " __resp_ifb
+      __resp_ifb=${__resp_ifb:-Y}
+      case "${__resp_ifb,,}" in
+        y|yes)
+          echo "Will replace existing CAKE on $IFBDEV." ;;
+        n|no)
+          echo "Leaving existing ingress CAKE in place; ingress will be skipped.";
+          DOWNLOAD_BW="SKIP"; SKIP_INGRESS=1 ;;
+        *)
+          # user supplied a bandwidth at this prompt
+          dnnorm=$(parse_bw "${__resp_ifb}") || true
+          if [ "$dnnorm" = "UNLIMITED" ] || [ "$dnnorm" = "AUTO" ] || [[ "$dnnorm" =~ ^[0-9]+(kbit|Mbit|Gbit)$ ]]; then
+            DOWNLOAD_BW="$dnnorm"
+            PRESET_DOWNLOAD_BW=1
+            echo "Will replace existing CAKE on $IFBDEV with bandwidth: $DOWNLOAD_BW"
+          else
+            echo "Unrecognized input; leaving existing CAKE in place.";
+            DOWNLOAD_BW="SKIP"; SKIP_INGRESS=1
+          fi
+          ;;
+      esac
+    else
+      # existing IFB without CAKE — automatically reused when user enables ingress (no prompt)
+      :
+    fi
+  fi
+
+  # detect existing CAKE on the selected interface (egress)
   if tc_has_cake "$SELECTED_IF"; then
     echo
     _yellow "Note: CAKE already present on $SELECTED_IF.";
@@ -279,66 +336,104 @@ main() {
     fi
   fi
 
-  # Ask whether to configure egress/upload (default yes)
-  if ask_yes_no "Configure upload (egress) on $SELECTED_IF?"; then
-    while true; do
-      read -rp "Enter upload rate (e.g. 10M, 800k, 'auto', or 'unlimited'): " upraw
-      upnorm=$(parse_bw "$upraw") || true
-      if [ "$upnorm" = "AUTO" ]; then
-        autod=$(autodetect_speed "$SELECTED_IF")
-        if [ -n "$autod" ]; then
-          echo "Autodetected link speed: $autod — using as upload limit."
-          upnorm="$autod"
-        else
-          echo "Autodetect failed — please enter a rate or 'unlimited'."; continue
+  # Ask whether to configure egress/upload (default yes).
+  # Allow user to enter a bandwidth directly at the prompt (e.g. "unlimited" or "10M").
+  read -rp "Configure upload (egress) on $SELECTED_IF? [Y/n or enter bandwidth directly]: " _resp
+  _resp=${_resp:-Y}
+  case "${_resp,,}" in
+    y|yes)
+      # ask for a rate
+      while true; do
+        read -rp "Enter upload rate (e.g. 10M, 800k, 'auto', or 'unlimited'): " upraw
+        upnorm=$(parse_bw "$upraw") || true
+        if [ "$upnorm" = "AUTO" ]; then
+          autod=$(autodetect_speed "$SELECTED_IF")
+          if [ -n "$autod" ]; then
+            echo "Autodetected link speed: $autod — using as upload limit."
+            upnorm="$autod"
+          else
+            echo "Autodetect failed — please enter a rate or 'unlimited'."; continue
+          fi
         fi
-      fi
-      if [ "$upnorm" = "UNLIMITED" ] || [[ "$upnorm" =~ ^[0-9]+(kbit|Mbit|Gbit)$ ]]; then
+        if [ "$upnorm" = "UNLIMITED" ] || [[ "$upnorm" =~ ^[0-9]+(kbit|Mbit|Gbit)$ ]]; then
+          UPLOAD_BW="$upnorm"
+          break
+        fi
+        echo "Invalid input — try again."
+      done
+      ;;
+    n|no)
+      UPLOAD_BW="SKIP" ;;
+    # user entered a bandwidth directly at the prompt
+    *)
+      upnorm=$(parse_bw "$_resp") || true
+      if [ "$upnorm" = "UNLIMITED" ] || [ "$upnorm" = "AUTO" ] || [[ "$upnorm" =~ ^[0-9]+(kbit|Mbit|Gbit)$ ]]; then
         UPLOAD_BW="$upnorm"
-        break
+      else
+        echo "Unrecognized input '$_resp' — treating as 'no'."; UPLOAD_BW="SKIP"
       fi
-      echo "Invalid input — try again."
-    done
-  else
-    UPLOAD_BW="SKIP"
-  fi
+      ;;
+  esac
 
-  # Ask whether to configure ingress/download (needs IFB)
-  if ask_yes_no "Configure download (ingress) shaping for $SELECTED_IF (requires IFB)?"; then
-    while true; do
-      read -rp "Enter download rate (e.g. 50M, 5000k, 'auto', or 'unlimited'): " dnraw
-      dnnorm=$(parse_bw "$dnraw") || true
-      if [ "$dnnorm" = "AUTO" ]; then
-        autod=$(autodetect_speed "$SELECTED_IF")
-        if [ -n "$autod" ]; then
-          echo "Autodetected link speed: $autod — using as download limit."
-          dnnorm="$autod"
-        else
-          echo "Autodetect failed — please enter a rate or 'unlimited'."; continue
-        fi
-      fi
-      if [ "$dnnorm" = "UNLIMITED" ] || [[ "$dnnorm" =~ ^[0-9]+(kbit|Mbit|Gbit)$ ]]; then
-        DOWNLOAD_BW="$dnnorm"
-        break
-      fi
-      echo "Invalid input — try again."
-    done
+
+  # Ask whether to configure ingress/download (supports entering bandwidth directly)
+  if [ "${SKIP_INGRESS-}" = "1" ] || [ "${PRESET_DOWNLOAD_BW-}" = "1" ]; then
+    # user chose to keep existing CAKE on IFB earlier or we already have a preset value — skip prompting
+    :
   else
-    DOWNLOAD_BW="SKIP"
+    read -rp "Configure download (ingress) shaping for $SELECTED_IF (requires IFB)? [Y/n or enter bandwidth directly]: " _resp_in
+    _resp_in=${_resp_in:-Y}
+    case "${_resp_in,,}" in
+      y|yes)
+        while true; do
+          read -rp "Enter download rate (e.g. 50M, 5000k, 'auto', or 'unlimited'): " dnraw
+          dnnorm=$(parse_bw "$dnraw") || true
+          if [ "$dnnorm" = "AUTO" ]; then
+            autod=$(autodetect_speed "$SELECTED_IF")
+            if [ -n "$autod" ]; then
+              echo "Autodetected link speed: $autod — using as download limit."
+              dnnorm="$autod"
+            else
+              echo "Autodetect failed — please enter a rate or 'unlimited'."; continue
+            fi
+          fi
+          if [ "$dnnorm" = "UNLIMITED" ] || [[ "$dnnorm" =~ ^[0-9]+(kbit|Mbit|Gbit)$ ]]; then
+            DOWNLOAD_BW="$dnnorm"
+            break
+          fi
+          echo "Invalid input — try again."
+        done
+        ;;
+      n|no)
+        DOWNLOAD_BW="SKIP" ;;
+      *)
+        # user supplied bandwidth directly at the Y/n prompt
+        dnnorm=$(parse_bw "$_resp_in") || true
+        if [ "$dnnorm" = "UNLIMITED" ] || [ "$dnnorm" = "AUTO" ] || [[ "$dnnorm" =~ ^[0-9]+(kbit|Mbit|Gbit)$ ]]; then
+          DOWNLOAD_BW="$dnnorm"
+        else
+          echo "Unrecognized input '$_resp_in' — treating as 'no'."; DOWNLOAD_BW="SKIP"
+        fi
+        ;;
+    esac
   fi
 
   echo
   echo
   echo "Summary of choices for $SELECTED_IF:"
   echo "  Upload limit (egress): ${UPLOAD_BW:-(skipped)}"
-  echo "  Download limit (ingress): ${DOWNLOAD_BW:-(skipped)}"
+  if [ "${DOWNLOAD_BW:-}" = "SKIP" ] && [ "${IFB_PRESENT:-0}" -eq 1 ] && [ "${IFB_HAS_CAKE:-0}" -eq 1 ]; then
+    echo "  Download limit (ingress): (existing CAKE on $IFBDEV)"
+  else
+    echo "  Download limit (ingress): ${DOWNLOAD_BW:-(skipped)}"
+  fi
 
   # Nicely print option lists (comma-separated)
   join_by() { local sep="$1"; shift; local out=""; for a in "$@"; do
       out+="${out:+$sep}$a"; done; printf "%s" "$out"; }
 
   echo "  Egress options : $(join_by ", " "${EGRESS_OPTS[@]}")"
-  echo "  Ingress options: $(join_by ", " "${INGRESS_OPTS[@]})"
+  echo "  Ingress options: $(join_by ", " "${INGRESS_OPTS[@]}")"
 
   if ! ask_yes_no "Proceed to apply these settings now?"; then
     echo "Aborted by user."; exit 0
@@ -353,6 +448,11 @@ main() {
 
   if [ "$UPLOAD_BW" != "SKIP" ]; then
     echo "- Setting egress CAKE on $SELECTED_IF"
+    if [ "$UPLOAD_BW" = "UNLIMITED" ]; then
+      _yellow "Applying: tc qdisc replace dev $SELECTED_IF root cake unlimited ${EGRESS_OPTS[*]}"
+    else
+      _yellow "Applying: tc qdisc replace dev $SELECTED_IF root cake bandwidth $UPLOAD_BW ${EGRESS_OPTS[*]}"
+    fi
     apply_cake_egress "$SELECTED_IF" "$UPLOAD_BW" "${EGRESS_OPTS[@]}"
   fi
 
@@ -361,6 +461,11 @@ main() {
     create_ifb "$SELECTED_IF"
     IFBDEV="ifb-$SELECTED_IF"
     setup_ingress_redirect "$SELECTED_IF" "$IFBDEV"
+    if [ "$DOWNLOAD_BW" = "UNLIMITED" ]; then
+      _yellow "Applying: tc qdisc replace dev $IFBDEV root cake unlimited ${INGRESS_OPTS[*]}"
+    else
+      _yellow "Applying: tc qdisc replace dev $IFBDEV root cake bandwidth $DOWNLOAD_BW ${INGRESS_OPTS[*]}"
+    fi
     echo "- Setting ingress CAKE on $IFBDEV"
     apply_cake_ingress "$IFBDEV" "$DOWNLOAD_BW" "${INGRESS_OPTS[@]}"
   fi

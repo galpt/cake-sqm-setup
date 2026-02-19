@@ -94,6 +94,7 @@ sudo ./cake-sqm-setup.sh --remove wlan0
   - Egress: `internet diffserv4 dual-srchost nat split-gso conservative`
   - Ingress: `internet diffserv4 dual-dsthost nat split-gso conservative`
 - The script detects IFB devices using kernel-reported link type (`ip link show type ifb`) — robust even if the interface name does not include "ifb".
+- If an `ifb-<iface>` device already exists, the script will automatically reuse it (no prompt). If that IFB already has CAKE configured, the script will prompt whether to replace it — you may reply `y`/`n` or enter a bandwidth directly (for example `unlimited`) at that prompt to immediately replace with the provided bandwidth.
 - IFS is intentionally restricted to newline+tab to avoid accidental word-splitting; the script handles array expansions safely.
 
 ## Limitations & Next Steps
