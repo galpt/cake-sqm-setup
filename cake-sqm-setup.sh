@@ -268,7 +268,7 @@ show_qdiscs() {
 }
 
 main() {
-  check_root_or_sudo
+  check_root_or_sudo "$@"
   ensure_prereqs
   print_header
 
@@ -479,7 +479,7 @@ main() {
 
 # Support a quick non-interactive removal: --remove IFACE
 if [ "${1-}" = "--remove" ]; then
-  check_root_or_sudo
+  check_root_or_sudo "$@"
   if [ -z "${2-}" ]; then echo "Usage: $PROG_NAME --remove <iface>"; exit 1; fi
   remove_cake "$2"; exit 0
 fi
