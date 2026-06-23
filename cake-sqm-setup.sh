@@ -22,8 +22,8 @@ fi
 PROG_NAME=$(basename "$0")
 
 # Recommended CAKE option strings (user-specified preference) — use arrays so words remain separate
-EGRESS_OPTS=(internet diffserv4 dual-srchost nat split-gso conservative)
-INGRESS_OPTS=(internet diffserv4 dual-dsthost nat split-gso conservative)
+EGRESS_OPTS=(oceanic diffserv4 conservative dual-srchost split-gso nat nowash memlimit 32mb)
+INGRESS_OPTS=(ingress oceanic diffserv4 conservative dual-dsthost split-gso nat nowash memlimit 32mb)
 
 # Colors (print newline automatically for nicer output)
 _green() { printf "\033[1;32m%s\033[0m\n" "$*"; }
