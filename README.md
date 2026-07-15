@@ -16,15 +16,17 @@ Interactive helper to install and configure CAKE (Common Applications Kept Enhan
 - [License](#license)
 
 ## Status
-- Stable interactive script that detects interfaces and applies CAKE.
-- Includes IFB creation + ingress redirect and safe removal mode.
+- Stable interactive script that detects interfaces and applies CAKE with optional boot-time persistence.
 
 ## Features
 - Auto-detects network interfaces (hides helper devices like IFB).
 - Detects existing CAKE qdiscs and offers to replace them.
 - Creates `ifb-<iface>` for inbound shaping when needed.
-- Uses recommended CAKE options for egress and ingress.
-- Non-destructive `--remove <iface>` cleanup mode.
+- Desktop / Router mode — uses `flows` for desktop (VPN-safe) or `dual-srchost`/`dual-dsthost` for router deployment.
+- Optional systemd persistence — CAKE survives reboots automatically.
+- `--remove <iface>` cleanup with persistence warning.
+- `--restore <iface>` non-interactive restore from saved config.
+- `--unpersist <iface>` cleanly removes all persistence artifacts.
 
 ## Requirements
 - Linux
@@ -63,23 +65,50 @@ sudo ./cake-sqm-setup.sh
 sudo ./cake-sqm-setup.sh --remove eth0
 ```
 
+4. Restore CAKE from saved config (typically run by systemd at boot):
+
+```bash
+sudo ./cake-sqm-setup.sh --restore eth0
+```
+
+5. Remove persistence (disable boot-time restore + delete saved config):
+
+```bash
+sudo ./cake-sqm-setup.sh --unpersist eth0
+```
+
 ## Usage (interactive)
 - The script shows detected interfaces (hiding IFB helper devices).
 - Select the interface number to configure (choose the physical WAN/egress if possible).
 - Provide upload/download rates (examples: `10M`, `800k`, `auto`, `unlimited`).
   - `auto` attempts to read the interface speed using `ethtool` or `iw`.
   - `unlimited` installs CAKE without a bandwidth shaper.
+- Choose **Desktop** (uses `flows` — recommended for VPN users) or **Router** (uses `dual-srchost`/`dual-dsthost`).
 - The script will optionally create an IFB device and redirect ingress traffic to it.
 - Confirm to apply changes — the script replaces qdiscs atomically.
+- After applying, you can opt into **systemd persistence** so CAKE is restored automatically after every reboot.
 
 ## Examples
-- Configure `eth0` egress at 10 Mbit and ingress at 50 Mbit:
+- Configure `eth0` in router mode, egress at 10 Mbit, ingress at 50 Mbit, with persistence:
 
 ```bash
 sudo ./cake-sqm-setup.sh
 # choose interface 'eth0'
 # upload: 10M
 # download: 50M
+# select deployment mode: 2 (router)
+# proceed: Y
+# persist across reboots: Y
+```
+
+- Configure `eth0` in desktop mode (uses `flows` — VPN-safe):
+
+```bash
+sudo ./cake-sqm-setup.sh
+# choose interface 'eth0'
+# upload: 10M
+# download: 50M
+# select deployment mode: 1 (desktop)
 # proceed: Y
 ```
 
@@ -89,17 +118,39 @@ sudo ./cake-sqm-setup.sh
 sudo ./cake-sqm-setup.sh --remove wlan0
 ```
 
+- Restore CAKE from saved config (non-interactive, used by systemd at boot):
+
+```bash
+sudo ./cake-sqm-setup.sh --restore wlan0
+```
+
+- Disable boot-time restore and delete saved config:
+
+```bash
+sudo ./cake-sqm-setup.sh --unpersist wlan0
+```
+
 ## Design Notes
-- CAKE options used by default:
-  - Egress: `oceanic diffserv4 conservative dual-srchost split-gso nat nowash memlimit 32mb`
+- CAKE options used by default, per deployment mode:
+
+  **Desktop mode** (uses `flows` — hashes per-flow, VPN-safe):
+  - Egress:  `oceanic diffserv4 conservative flows split-gso nat nowash memlimit 32mb`
+  - Ingress: `ingress oceanic diffserv4 conservative flows split-gso nat nowash memlimit 32mb`
+
+  **Router mode** (uses `dual-srchost` / `dual-dsthost` — hashes per host):
+  - Egress:  `oceanic diffserv4 conservative dual-srchost split-gso nat nowash memlimit 32mb`
   - Ingress: `ingress oceanic diffserv4 conservative dual-dsthost split-gso nat nowash memlimit 32mb`
+
+  The `flows` parameter is recommended when a VPN is in use; it hashes on the
+  full flow tuple (src IP, dst IP, proto, src port, dst port) rather than just
+  source or destination host, which preserves VPN encapsulation boundaries.
 - The script detects IFB devices using kernel-reported link type (`ip link show type ifb`) — robust even if the interface name does not include "ifb".
 - If an `ifb-<iface>` device already exists, the script will automatically reuse it (no prompt). If that IFB already has CAKE configured, the script will prompt whether to replace it — you may reply `y`/`n` or enter a bandwidth directly (for example `unlimited`) at that prompt to immediately replace with the provided bandwidth.
 - IFS is intentionally restricted to newline+tab to avoid accidental word-splitting; the script handles array expansions safely.
+- **Persistence:** When enabled, the script saves the configuration to `/etc/cake-sqm/<iface>.conf` and installs a systemd oneshot service (`cake-sqm-restore@<iface>.service`) that re-applies the settings automatically at boot via `--restore <iface>`.
 
 ## Limitations & Next Steps
-- Persistence: this script does not yet create a system startup unit to re-apply settings after reboot — can be added on request.
-- Non-interactive mode: currently interactive; CLI flags can be added for automation.
+- Non-interactive flags (`--remove`, `--restore`, `--unpersist`) are available; full CLI automation (e.g. `--apply <iface> --bandwidth 10M`) is a future enhancement.
 
 ## Contributing
 - Open an issue or PR with improvements or platform-specific fixes.
