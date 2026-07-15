@@ -354,7 +354,8 @@ remove_persistence_config() {
 }
 
 restore_config() {
-  local ifc=$1 conf="/etc/cake-sqm/$ifc.conf"
+  local ifc=$1
+  local conf="/etc/cake-sqm/$ifc.conf"
   if [ ! -f "$conf" ]; then
     _red "ERROR: no saved config found for $ifc ($conf)"
     exit 1
