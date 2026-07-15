@@ -607,6 +607,7 @@ main() {
     save_persistence_config "$SELECTED_IF" "$UPLOAD_BW" "${DOWNLOAD_BW:-SKIP}" "$MODE"
     install_systemd_persistence "$SELECTED_IF"
     _green "CAKE will be restored automatically at boot."
+    echo "Run '$PROG_NAME --unpersist $SELECTED_IF' to disable boot-time restore."
   fi
 
   echo
