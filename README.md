@@ -137,13 +137,17 @@ sudo ./cake-sqm-setup.sh --unpersist wlan0
   - Egress:  `oceanic diffserv4 conservative flows split-gso nat nowash memlimit 32mb`
   - Ingress: `ingress oceanic diffserv4 conservative flows split-gso nat nowash memlimit 32mb`
 
-  **Router mode** (uses `dual-srchost` / `dual-dsthost` — hashes per host):
+  **Router mode** (uses `dual-srchost` / `dual-dsthost` — per-host flow accounting):
   - Egress:  `oceanic diffserv4 conservative dual-srchost split-gso nat nowash memlimit 32mb`
   - Ingress: `ingress oceanic diffserv4 conservative dual-dsthost split-gso nat nowash memlimit 32mb`
 
-  The `flows` parameter is recommended when a VPN is in use; it hashes on the
-  full flow tuple (src IP, dst IP, proto, src port, dst port) rather than just
-  source or destination host, which preserves VPN encapsulation boundaries.
+  All three modes hash the full 5-tuple (src IP, dst IP, proto, src port,
+  dst port) for queue assignment. The difference is that `dual-srchost` and
+  `dual-dsthost` additionally track per-host flow counts to ensure fairness
+  between different LAN clients — ideal for router deployments. `flows` omits
+  this per-host tracking, which is preferable when a VPN is in use: all
+  tunneled traffic shares the same outer source/destination IPs on the physical
+  interface, so per-host accounting provides no benefit.
 - The script detects IFB devices using kernel-reported link type (`ip link show type ifb`) — robust even if the interface name does not include "ifb".
 - If an `ifb-<iface>` device already exists, the script will automatically reuse it (no prompt). If that IFB already has CAKE configured, the script will prompt whether to replace it — you may reply `y`/`n` or enter a bandwidth directly (for example `unlimited`) at that prompt to immediately replace with the provided bandwidth.
 - IFS is intentionally restricted to newline+tab to avoid accidental word-splitting; the script handles array expansions safely.

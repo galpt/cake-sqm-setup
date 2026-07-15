@@ -267,8 +267,8 @@ show_qdiscs() {
 prompt_deploy_mode() {
   echo
   echo "Select deployment mode:"
-  echo "  1) Desktop — uses 'flows' (recommended for VPN users)"
-  echo "  2) Router  — uses 'dual-srchost'/'dual-dsthost'"
+  echo "  1) Desktop — uses 'flows' (recommended for VPN users; no per-host tracking)"
+  echo "  2) Router  — uses 'dual-srchost'/'dual-dsthost' (per-host flow fairness)"
   echo
   while true; do
     read -rp "Choice [1/2] (default: 1): " mode
