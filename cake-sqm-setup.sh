@@ -309,11 +309,13 @@ PERSIST
 install_systemd_persistence() {
   local ifc=$1
   local unit="/etc/systemd/system/cake-sqm-restore@.service"
-  if [ ! -f "$unit" ]; then
-    cat > "$unit" <<'UNIT'
+
+  # Always regenerate the unit so existing users get the latest version
+  cat > "$unit" <<'UNIT'
 [Unit]
 Description=CAKE SQM restore for %I
-After=network.target
+After=network-online.target
+Wants=network-online.target
 
 [Service]
 Type=oneshot
@@ -323,13 +325,12 @@ RemainAfterExit=yes
 [Install]
 WantedBy=multi-user.target
 UNIT
-    # Escape & and \ for sed replacement (protect against unusual paths)
-    local escaped_path
-    escaped_path=$(sed 's/[&\]/\\&/g' <<< "$SCRIPT_PATH")
-    sed -i "s|SCRIPT_PATH|$escaped_path|g" "$unit"
-    chmod 644 "$unit"
-    systemctl daemon-reload
-  fi
+  # Escape & and \ for sed replacement (protect against unusual paths)
+  local escaped_path
+  escaped_path=$(sed 's/[&\]/\\&/g' <<< "$SCRIPT_PATH")
+  sed -i "s|SCRIPT_PATH|$escaped_path|g" "$unit"
+  chmod 644 "$unit"
+  systemctl daemon-reload
   systemctl enable "cake-sqm-restore@$ifc.service"
   _green "Enabled systemd service: cake-sqm-restore@$ifc.service"
 }
@@ -358,6 +359,23 @@ restore_config() {
     _red "ERROR: no saved config found for $ifc ($conf)"
     exit 1
   fi
+
+  # Wait for the interface to become available (up to 30 seconds).
+  # Wireless interfaces may not exist at boot when the service starts.
+  echo "Waiting for interface $ifc..."
+  local waited=0
+  while [ "$waited" -lt 30 ]; do
+    if ip link show dev "$ifc" >/dev/null 2>&1; then
+      break
+    fi
+    sleep 1
+    waited=$((waited + 1))
+  done
+  if ! ip link show dev "$ifc" >/dev/null 2>&1; then
+    _red "ERROR: interface $ifc not found after 30 seconds"
+    exit 1
+  fi
+
   # shellcheck source=/dev/null
   source "$conf"
   build_cake_opts

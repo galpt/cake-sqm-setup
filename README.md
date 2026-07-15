@@ -147,7 +147,7 @@ sudo ./cake-sqm-setup.sh --unpersist wlan0
 - The script detects IFB devices using kernel-reported link type (`ip link show type ifb`) — robust even if the interface name does not include "ifb".
 - If an `ifb-<iface>` device already exists, the script will automatically reuse it (no prompt). If that IFB already has CAKE configured, the script will prompt whether to replace it — you may reply `y`/`n` or enter a bandwidth directly (for example `unlimited`) at that prompt to immediately replace with the provided bandwidth.
 - IFS is intentionally restricted to newline+tab to avoid accidental word-splitting; the script handles array expansions safely.
-- **Persistence:** When enabled, the script saves the configuration to `/etc/cake-sqm/<iface>.conf` and installs a systemd oneshot service (`cake-sqm-restore@<iface>.service`) that re-applies the settings automatically at boot via `--restore <iface>`.
+- **Persistence:** When enabled, the script saves the configuration to `/etc/cake-sqm/<iface>.conf` and installs a systemd oneshot service (`cake-sqm-restore@<iface>.service`). The service triggers after `network-online.target` and waits up to 30 seconds for the interface to appear before applying CAKE, so it works reliably even for wireless interfaces that connect later in the boot sequence. CAKE is re-applied automatically via `--restore <iface>` on every boot.
 
 ## Limitations & Next Steps
 - Non-interactive flags (`--remove`, `--restore`, `--unpersist`) are available; full CLI automation (e.g. `--apply <iface> --bandwidth 10M`) is a future enhancement.
